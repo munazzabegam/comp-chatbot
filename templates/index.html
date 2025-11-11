@@ -5,53 +5,120 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Compass Logistics Chatbot</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
-  <div class="chat-container">
-    <h2>💬 Compass Logistics Chatbot</h2>
-    <div id="chat-box"></div>
+  <div class="chat-wrapper">
+    <header>
+      <img src="https://www.compasslog.com/img/compass-logo.png" alt="Compass Logo" class="logo">
+      <h1>Compass Logistics Assistant</h1>
+      <p>Ask anything about Compass Logistics International</p>
+    </header>
 
-    <div class="input-area">
-      <input type="text" id="user-input" placeholder="Ask about Compass Logistics..." />
-      <button onclick="sendMessage()">Send</button>
+    <main id="chat-box" class="chat-box"></main>
+
+    <div class="input-section">
+      <input id="user-input" type="text" placeholder="Type your question..." autofocus>
+      <button id="send-btn">Send 🚀</button>
+      <button id="clear-btn" title="Clear chat">🗑</button>
     </div>
   </div>
 
   <script>
-    async function sendMessage() {
-      const input = document.getElementById("user-input");
-      const chatBox = document.getElementById("chat-box");
-      const message = input.value.trim();
+    const input = document.getElementById("user-input");
+    const chatBox = document.getElementById("chat-box");
+    const sendBtn = document.getElementById("send-btn");
+    const clearBtn = document.getElementById("clear-btn");
 
-      if (!message) return;
-
-      chatBox.innerHTML += `<div class="user-msg"><b>You:</b> ${message}</div>`;
-      input.value = "";
+    function appendMessage(sender, text, id=null) {
+      const msg = document.createElement("div");
+      msg.className = sender === "user" ? "msg user" : "msg bot";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.innerHTML = marked.parse(text || "");
+      if (id) bubble.id = id;
+      msg.appendChild(bubble);
+      chatBox.appendChild(msg);
       chatBox.scrollTop = chatBox.scrollHeight;
-
-      try {
-        const res = await fetch("/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message })
-        });
-
-        const data = await res.json();
-        if (data.reply) {
-          chatBox.innerHTML += `<div class="bot-msg"><b>CompassBot:</b> ${data.reply}</div>`;
-        } else {
-          chatBox.innerHTML += `<div class="error">Error: ${data.error}</div>`;
-        }
-
-        chatBox.scrollTop = chatBox.scrollHeight;
-      } catch (err) {
-        chatBox.innerHTML += `<div class="error">Error connecting to server.</div>`;
-      }
     }
 
-    document.getElementById("user-input").addEventListener("keypress", function(e) {
-      if (e.key === "Enter") sendMessage();
-    });
+    async function sendMessage() {
+      const text = input.value.trim();
+      if (!text) return;
+
+      appendMessage("user", text);
+      input.value = "";
+      input.focus();
+
+      const msgId = "bot-msg-" + Date.now();
+      appendMessage("bot", " ", msgId);
+
+      const eventSource = new EventSourcePolyfill("/chat/stream", {
+        headers: { "Content-Type": "application/json" },
+        payload: JSON.stringify({ message: text }),
+        method: "POST",
+      });
+
+      let reply = "";
+      const bubble = document.getElementById(msgId);
+
+      eventSource.onmessage = (event) => {
+        if (event.data === "[DONE]") {
+          eventSource.close();
+          return;
+        } else if (event.data.startsWith("[ERROR]")) {
+          bubble.innerHTML = "⚠️ Error: " + event.data.slice(7);
+          eventSource.close();
+          return;
+        }
+        reply += event.data;
+        bubble.innerHTML = marked.parse(reply);
+        chatBox.scrollTop = chatBox.scrollHeight;
+      };
+    }
+
+    async function clearChat() {
+      await fetch("/clear", { method: "POST" });
+      chatBox.innerHTML = "";
+      appendMessage("bot", "🧹 Chat cleared!");
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    clearBtn.addEventListener("click", clearChat);
+    input.addEventListener("keypress", e => { if (e.key === "Enter") sendMessage(); });
+
+    // Show greeting on load
+    appendMessage("bot", "👋 Hi! I'm CompassBot. Ask me anything about Compass Logistics International.");
+
+    // Polyfill for EventSource POST (since native doesn't support POST)
+    class EventSourcePolyfill {
+      constructor(url, options = {}) {
+        this.eventSource = null;
+        const { headers, payload, method } = options;
+        fetch(url, {
+          method: method || "POST",
+          headers: headers || {},
+          body: payload || null,
+        }).then(async res => {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            chunk.split("\n\n").forEach(line => {
+              if (line.startsWith("data:")) {
+                const event = { data: line.slice(5).trim() };
+                if (this.onmessage) this.onmessage(event);
+              }
+            });
+          }
+        });
+      }
+      close() {
+        this.eventSource?.close?.();
+      }
+    }
   </script>
 </body>
 </html>
